@@ -25,7 +25,7 @@ const otas = [
 ];
 
 async function writeNewFiles(basepath, isodate, results, prodVsTest) {
-  console.log('new firmware info available');
+  console.log('new firmwares available');
   await writeFileAsync(path.join(basepath, `${isodate}-prod.json`), results[0].data);
   await writeFileAsync(path.join(basepath, `${isodate}-test.json`), results[1].data);
   await writeFileAsync(path.join(basepath, `${isodate}-pvst.json`), prodVsTest);
