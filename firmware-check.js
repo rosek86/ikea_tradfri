@@ -12,23 +12,24 @@ const readdirAsync    = util.promisify(fs.readdir);
 const writeFileAsync  = util.promisify(fs.writeFile);
 const readFileAsync   = util.promisify(fs.readFile);
 const statAsync       = util.promisify(fs.stat);
+const mkdirAsync      = util.promisify(fs.mkdir);
 
 const url = process.env.SLACK_WEBHOOK_URL;
 const webhook = new IncomingWebhook(url);
 
 // NOTE: for some reason require('request') gives error, wget works okay though
-const requestAsync = async (url) => (await execAsync(`wget -O - ${url}`)).stdout;
+const requestAsync = async (url) => (await execAsync(`wget -O - ${url}`, {
+  maxBuffer: 10 * 1024 * 1024
+})).stdout;
 
 const otas = [
   { env: 'prod', url: 'https://fw.ota.homesmart.ikea.net/feed/version_info.json' },
   { env: 'test', url: 'http://fw.test.ota.homesmart.ikea.net/feed/version_info.json' },
 ];
 
-async function writeNewFiles(basepath, isodate, results, prodVsTest) {
-  console.log('new firmwares available');
-  await writeFileAsync(path.join(basepath, `${isodate}-prod.json`), results[0].data);
-  await writeFileAsync(path.join(basepath, `${isodate}-test.json`), results[1].data);
-  await writeFileAsync(path.join(basepath, `${isodate}-pvst.json`), prodVsTest);
+async function writeFiles(files) {
+  const promises = files.map((file) => writeFileAsync(file.filepath, file.content));
+  await Promise.all(promises);
 }
 
 (async () => {
@@ -66,30 +67,60 @@ async function writeNewFiles(basepath, isodate, results, prodVsTest) {
       ]);
 
       if (results[0].data === filesContent[0] && results[1].data === filesContent[1]) {
+        console.log('firmwares unchanged.');
         return;
       }
     }
 
+    console.log('new firmwares available');
+
     const firmwares = results.map((result) =>
       JSON.parse(result.data).map((fw) => {
         return {
-          filename: fw.fw_binary_url.split('/').pop(),
-          fw_image_type: fw.fw_image_type,
           env: result.env,
+          filename: fw.fw_binary_url.split('/').pop(),
+          imageType: fw.fw_image_type,
+          contentPromise: requestAsync(fw.fw_binary_url),
+          content: '',
         };
       })
     );
 
-    const all = firmwares[0].concat(...firmwares[1]);
+    const allFirmwares = firmwares[0].concat(...firmwares[1]);
 
-    const prodVsTest = all.reduce((obj, fw) => {
-      const type = fw.fw_image_type || 'gateway';
-      obj[type] = obj[type] || [];
-      obj[type].push({ env: fw.env, file: fw.filename });
+    const prodVsTest = allFirmwares.reduce((obj, fw) => {
+      const type = fw.imageType || 'gateway';
+      obj[type] = obj[type] || {};
+      obj[type][fw.env] = fw.filename;
       return obj;
     }, {});
 
-    await writeNewFiles(basepath, isodate, results, JSON.stringify(prodVsTest, null, 2));
+    // Wait for firmwares to be downloaded
+    await Promise.all(allFirmwares.map((fw) => {
+      return fw.contentPromise.then((content) => {
+        fw.content = content;
+      });
+    }));
+
+    const filesList = [
+      { filepath: path.join(basepath, `${isodate}-prod.json`), content: results[0].data },
+      { filepath: path.join(basepath, `${isodate}-test.json`), content: results[1].data },
+      { filepath: path.join(basepath, isodate, `prodVsTest.json`),
+        content: JSON.stringify(prodVsTest, null, 2) },
+    ];
+
+    for (const firmware of allFirmwares) {
+      filesList.push({
+        filepath: path.join(basepath, isodate, firmware.env, firmware.filename),
+        content: firmware.content
+      });
+    }
+
+    await mkdirAsync(path.join(basepath, isodate));
+    await mkdirAsync(path.join(basepath, isodate, 'prod'));
+    await mkdirAsync(path.join(basepath, isodate, 'test'));
+
+    await writeFiles(filesList);
 
     // Send simple text to the webhook channel
     webhook.send('Tradfri firmware updated!', (err, res) => {

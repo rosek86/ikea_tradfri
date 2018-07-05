@@ -4,7 +4,7 @@
   "description": "IKEA Tradfri tools",
   "main": "firmware-check.js",
   "scripts": {
-    "start": "SLACK_WEBHOOK_URL=\"$(cat webhook_url)\" node firmware-check.js",
+    "start": "env $(cat .env | xargs) node firmware-check.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
